@@ -26,6 +26,30 @@ class TaskScheduler:
 
         self.futures = {}
 
+        # Recover tasks that were running when the previous
+        # service process stopped unexpectedly.
+        self._recover_interrupted_tasks()
+
+    def _recover_interrupted_tasks(self):
+        """
+        Recover tasks that were persisted as RUNNING when the
+        previous service process stopped.
+
+        A RUNNING task has no active worker after a process restart,
+        so leaving it in RUNNING would cause it to remain stuck
+        forever.
+
+        We reset it to WAITING so the scheduler can execute it again.
+        """
+        with self.db_lock:
+            Task.objects.filter(
+                status=TaskStatus.RUNNING
+            ).update(
+                status=TaskStatus.WAITING,
+                next_retry_at=None,
+                updated_at=timezone.now(),
+            )
+
     def shutdown(self):
         self.runner.shutdown()
 

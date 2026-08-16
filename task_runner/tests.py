@@ -530,8 +530,10 @@ class TaskSchedulerTests(TransactionTestCase):
 
     def test_running_task_cannot_be_cancelled(self):
         task = Task.objects.create(
-            name="Generate Report",
-            status=TaskStatus.RUNNING,
+            name="Running Task",
+            min_duration=0,
+            max_duration=0,
+            failure_probability=0,
         )
 
         scheduler = TaskScheduler(
@@ -540,8 +542,20 @@ class TaskSchedulerTests(TransactionTestCase):
         )
 
         try:
+            # Simulate a task that is already running after
+            # the scheduler has started.
+            task.status = TaskStatus.RUNNING
+            task.save(update_fields=["status", "updated_at"])
+
             with self.assertRaises(ValueError):
                 scheduler.cancel_task(task.id)
+
+            task.refresh_from_db()
+
+            self.assertEqual(
+                task.status,
+                TaskStatus.RUNNING,
+            )
 
         finally:
             scheduler.shutdown()
@@ -638,6 +652,31 @@ class TaskSchedulerTests(TransactionTestCase):
             scheduler.futures.clear()
             scheduler.shutdown()
 
+    def test_running_task_is_recovered_after_restart(self):
+        task = Task.objects.create(
+            name="Interrupted Document Task",
+            status=TaskStatus.RUNNING,
+            min_duration=0,
+            max_duration=0,
+            failure_probability=0,
+        )
+
+        scheduler = TaskScheduler(
+            max_workers=1,
+            poll_interval=0.001,
+        )
+
+        try:
+            task.refresh_from_db()
+
+            self.assertEqual(
+                task.status,
+                TaskStatus.WAITING,
+            )
+
+        finally:
+            scheduler.shutdown()
+            
 class TaskAPITests(TransactionTestCase):
 
     def setUp(self):
@@ -648,7 +687,7 @@ class TaskAPITests(TransactionTestCase):
 
         scheduler_manager.stop()
         super().tearDown()
-        
+
     def test_submit_workflow(self):
         response = self.client.post(
             "/api/tasks/",

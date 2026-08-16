@@ -76,8 +76,11 @@ class SchedulerManager:
             self.thread = None
 
 
+from django.conf import settings
+
+
 scheduler_manager = SchedulerManager(
-    max_workers=3
+    max_workers=settings.TASK_MAX_WORKERS
 )
 
 
