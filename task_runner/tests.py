@@ -1,8 +1,15 @@
-from django.test import TestCase, TransactionTestCase
-from .models import Task, TaskStatus
+from datetime import timedelta
 from unittest.mock import patch
+
+from django.test import TestCase, TransactionTestCase
+from django.utils import timezone
+
+from .dependency_service import (
+    CircularDependencyError,
+    validate_dependencies,
+)
+from .models import Task, TaskStatus
 from .runner import TaskRunner
-from .dependency_service import (CircularDependencyError,validate_dependencies,)
 from .scheduler import TaskScheduler
 
 class TaskModelTests(TestCase):
@@ -95,6 +102,120 @@ class TaskRunnerTests(TestCase):
             self.assertEqual(
                 task.status,
                 TaskStatus.SUCCEEDED,
+            )
+
+            self.assertEqual(
+                task.attempts,
+                1,
+            )
+
+        finally:
+            runner.shutdown()
+
+    @patch("task_runner.runner.time.sleep")
+    @patch("task_runner.runner.random.random", return_value=0.0)
+    @patch("task_runner.runner.random.uniform", return_value=0)
+    def test_failed_task_is_scheduled_for_retry(
+        self,
+        mock_uniform,
+        mock_random,
+        mock_sleep,
+    ):
+        task = Task.objects.create(
+            name="Extract Text",
+            failure_probability=1.0,
+            max_retries=3,
+            min_duration=0,
+            max_duration=0,
+        )
+
+        runner = TaskRunner(max_workers=1)
+
+        try:
+            runner.run_task(task.id)
+
+            task.refresh_from_db()
+
+            self.assertEqual(
+                task.status,
+                TaskStatus.WAITING,
+            )
+
+            self.assertEqual(
+                task.attempts,
+                1,
+            )
+
+            self.assertEqual(
+                task.retry_count,
+                1,
+            )
+
+            self.assertIsNotNone(
+                task.next_retry_at,
+            )
+
+        finally:
+            runner.shutdown()
+    
+    @patch("task_runner.runner.time.sleep")
+    @patch("task_runner.runner.random.random", return_value=0.0)
+    @patch("task_runner.runner.random.uniform", return_value=0)
+    def test_retry_delay_increases_exponentially(
+        self,
+        mock_uniform,
+        mock_random,
+        mock_sleep,
+    ):
+        task = Task.objects.create(
+            name="Generate Report",
+            failure_probability=1.0,
+            max_retries=3,
+            min_duration=0,
+            max_duration=0,
+        )
+
+        runner = TaskRunner(max_workers=1)
+
+        try:
+            first_delay = runner._calculate_retry_delay(1)
+            second_delay = runner._calculate_retry_delay(2)
+            third_delay = runner._calculate_retry_delay(3)
+
+            self.assertEqual(first_delay, 1)
+            self.assertEqual(second_delay, 2)
+            self.assertEqual(third_delay, 4)
+
+        finally:
+            runner.shutdown()
+    
+    @patch("task_runner.runner.time.sleep")
+    @patch("task_runner.runner.random.random", return_value=0.0)
+    @patch("task_runner.runner.random.uniform", return_value=0)
+    def test_task_permanently_fails_after_retries(
+        self,
+        mock_uniform,
+        mock_random,
+        mock_sleep,
+    ):
+        task = Task.objects.create(
+            name="Generate Report",
+            failure_probability=1.0,
+            max_retries=0,
+            min_duration=0,
+            max_duration=0,
+        )
+
+        runner = TaskRunner(max_workers=1)
+
+        try:
+            runner.run_task(task.id)
+
+            task.refresh_from_db()
+
+            self.assertEqual(
+                task.status,
+                TaskStatus.FAILED,
             )
 
             self.assertEqual(
@@ -277,6 +398,106 @@ class TaskSchedulerTests(TransactionTestCase):
             self.assertEqual(
                 len(scheduler.futures),
                 2,
+            )
+
+        finally:
+            scheduler.shutdown()
+
+    def test_failure_blocks_entire_downstream_chain(self):
+        extract_text = Task.objects.create(
+            name="Extract Text",
+            min_duration=0,
+            max_duration=0,
+            failure_probability=1,
+            max_retries=0,
+        )
+
+        analyze_document = Task.objects.create(
+            name="Analyze Document",
+            min_duration=0,
+            max_duration=0,
+            failure_probability=0,
+        )
+
+        generate_report = Task.objects.create(
+            name="Generate Report",
+            min_duration=0,
+            max_duration=0,
+            failure_probability=0,
+        )
+
+        analyze_document.dependencies.add(extract_text)
+        generate_report.dependencies.add(analyze_document)
+
+        scheduler = TaskScheduler(
+            max_workers=2,
+            poll_interval=0.001,
+        )
+
+        try:
+            scheduler.run_until_idle()
+
+            extract_text.refresh_from_db()
+            analyze_document.refresh_from_db()
+            generate_report.refresh_from_db()
+
+            self.assertEqual(
+                extract_text.status,
+                TaskStatus.FAILED,
+            )
+
+            self.assertEqual(
+                analyze_document.status,
+                TaskStatus.BLOCKED,
+            )
+
+            self.assertEqual(
+                generate_report.status,
+                TaskStatus.BLOCKED,
+            )
+
+            self.assertEqual(
+                analyze_document.attempts,
+                0,
+            )
+
+            self.assertEqual(
+                generate_report.attempts,
+                0,
+            )
+
+        finally:
+            scheduler.shutdown()
+
+    def test_retry_is_not_run_before_retry_time(self):
+        task = Task.objects.create(
+            name="Extract Text",
+            status=TaskStatus.WAITING,
+            retry_count=1,
+            next_retry_at=timezone.now() + timedelta(seconds=60),
+            min_duration=0,
+            max_duration=0,
+            failure_probability=0,
+        )
+
+        scheduler = TaskScheduler(
+            max_workers=1,
+            poll_interval=0.001,
+        )
+
+        try:
+            scheduler._submit_ready_tasks()
+
+            self.assertEqual(
+                len(scheduler.futures),
+                0,
+            )
+
+            task.refresh_from_db()
+
+            self.assertEqual(
+                task.status,
+                TaskStatus.WAITING,
             )
 
         finally:

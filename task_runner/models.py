@@ -13,6 +13,8 @@ class Task(models.Model):
     name = models.CharField(max_length=255)
     status = models.CharField(max_length=20,choices=TaskStatus.choices,default=TaskStatus.WAITING,)
     attempts = models.PositiveIntegerField(default=0)
+    retry_count = models.PositiveIntegerField(default=0)
+    next_retry_at = models.DateTimeField(null=True,blank=True,)
     max_retries = models.PositiveIntegerField(default=3)
     failure_probability = models.FloatField(default=0.1)
     min_duration = models.FloatField(default=1.0)
