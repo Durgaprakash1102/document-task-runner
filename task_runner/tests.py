@@ -19,3 +19,52 @@ class TaskModelTests(TestCase):
         analyze_document.dependencies.add(extract_text)
         self.assertIn(extract_text,analyze_document.dependencies.all(),)
         self.assertIn(analyze_document,extract_text.dependents.all(),)
+
+from .dependency_service import (CircularDependencyError,validate_dependencies,)
+
+class DependencyValidationTests(TestCase):
+
+    def test_valid_dependency_graph_is_accepted(self):
+        dependencies = {
+            "extract_text": [],
+            "analyze_document": ["extract_text"],
+            "generate_report": ["analyze_document"],
+        }
+
+        self.assertTrue(validate_dependencies(dependencies))
+
+    def test_unknown_dependency_is_rejected(self):
+        dependencies = {
+            "analyze_document": ["extract_text"],
+        }
+
+        with self.assertRaises(ValueError):
+            validate_dependencies(dependencies)
+
+    def test_direct_circular_dependency_is_rejected(self):
+        dependencies = {
+            "task_a": ["task_b"],
+            "task_b": ["task_a"],
+        }
+
+        with self.assertRaises(CircularDependencyError):
+            validate_dependencies(dependencies)
+
+    def test_indirect_circular_dependency_is_rejected(self):
+        dependencies = {
+            "task_a": ["task_b"],
+            "task_b": ["task_c"],
+            "task_c": ["task_a"],
+        }
+
+        with self.assertRaises(CircularDependencyError):
+            validate_dependencies(dependencies)
+
+    def test_multiple_independent_tasks_are_valid(self):
+        dependencies = {
+            "extract_text": [],
+            "generate_preview": [],
+            "send_notification": [],
+        }
+
+        self.assertTrue(validate_dependencies(dependencies))
