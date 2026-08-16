@@ -11,6 +11,7 @@ from .dependency_service import (
 from .models import Task, TaskStatus
 from .runner import TaskRunner
 from .scheduler import TaskScheduler
+from rest_framework.test import APIClient
 
 class TaskModelTests(TestCase):
     def test_task_defaults(self):
@@ -637,3 +638,159 @@ class TaskSchedulerTests(TransactionTestCase):
             scheduler.futures.clear()
             scheduler.shutdown()
 
+class TaskAPITests(TransactionTestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+    
+    def tearDown(self):
+        from .background import scheduler_manager
+
+        scheduler_manager.stop()
+        super().tearDown()
+        
+    def test_submit_workflow(self):
+        response = self.client.post(
+            "/api/tasks/",
+            {
+                "tasks": [
+                    {
+                        "name": "Extract Text",
+                        "failure_probability": 0,
+                        "min_duration": 0,
+                        "max_duration": 0,
+                    },
+                    {
+                        "name": "Analyze Document",
+                        "depends_on": ["Extract Text"],
+                        "failure_probability": 0,
+                        "min_duration": 0,
+                        "max_duration": 0,
+                    },
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            201,
+        )
+
+        self.assertEqual(
+            len(response.data["tasks"]),
+            2,
+        )
+
+    def test_get_task_status(self):
+        task = Task.objects.create(
+            name="Extract Text",
+        )
+
+        response = self.client.get(
+            f"/api/tasks/{task.id}/"
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertEqual(
+            response.data["id"],
+            task.id,
+        )
+
+    def test_cancel_waiting_task(self):
+        task = Task.objects.create(
+            name="Long Task",
+            status=TaskStatus.WAITING,
+        )
+
+        response = self.client.post(
+            f"/api/tasks/{task.id}/cancel/"
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        task.refresh_from_db()
+
+        self.assertEqual(
+            task.status,
+            TaskStatus.CANCELLED,
+        )
+
+    def test_stats_endpoint(self):
+        Task.objects.create(
+            name="Waiting Task",
+            status=TaskStatus.WAITING,
+        )
+
+        Task.objects.create(
+            name="Running Task",
+            status=TaskStatus.RUNNING,
+        )
+
+        Task.objects.create(
+            name="Succeeded Task",
+            status=TaskStatus.SUCCEEDED,
+        )
+
+        response = self.client.get(
+            "/api/stats/"
+        )
+
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertEqual(
+            response.data["waiting"],
+            1,
+        )
+
+        self.assertEqual(
+            response.data["running"],
+            1,
+        )
+
+    def test_circular_dependency_is_rejected(self):
+        response = self.client.post(
+            "/api/tasks/",
+            {
+                "tasks": [
+                    {
+                        "name": "Task A",
+                        "depends_on": ["Task C"],
+                    },
+                    {
+                        "name": "Task B",
+                        "depends_on": ["Task A"],
+                    },
+                    {
+                        "name": "Task C",
+                        "depends_on": ["Task B"],
+                    },
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            400,
+        )
+
+        self.assertIn(
+            "error",
+            response.data,
+        )
+
+        self.assertEqual(
+            Task.objects.count(),
+            0,
+        )

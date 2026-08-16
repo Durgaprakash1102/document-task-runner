@@ -132,38 +132,46 @@ class TaskScheduler:
         try:
             while True:
                 self._collect_completed_tasks()
-
                 self._submit_ready_tasks()
-
                 self._collect_completed_tasks()
 
                 with self.db_lock:
-                    waiting_exists = Task.objects.filter(
-                        status=TaskStatus.WAITING
-                    ).exists()
+                    waiting_tasks = list(
+                        Task.objects.filter(
+                            status=TaskStatus.WAITING
+                        ).order_by("created_at", "id")
+                    )
 
-                if not self.futures and not waiting_exists:
+                # Nothing is running and nothing is waiting.
+                if not self.futures and not waiting_tasks:
                     break
 
-                if not self.futures and waiting_exists:
-                    self._submit_ready_tasks()
-
+                # Tasks are waiting, but they may be waiting for
+                # a retry time or for dependencies.
+                if not self.futures and waiting_tasks:
                     with self.db_lock:
-                        waiting_exists = Task.objects.filter(
+                        ready_tasks_exist = Task.objects.filter(
                             status=TaskStatus.WAITING
+                        ).filter(
+                            models.Q(next_retry_at__isnull=True)
+                            | models.Q(
+                                next_retry_at__lte=timezone.now()
+                            )
                         ).exists()
 
-                    if waiting_exists and not self.futures:
-                        raise RuntimeError(
-                            "Scheduler detected tasks that cannot "
-                            "make progress."
-                        )
+                    if ready_tasks_exist:
+                        continue
+
+                    # No task is currently runnable.
+                    # Wait briefly and check again.
+                    time.sleep(self.poll_interval)
+                    continue
 
                 time.sleep(self.poll_interval)
 
         finally:
             close_old_connections()
-            
+
     def cancel_task(self, task_id):
         with self.db_lock:
             task = Task.objects.get(id=task_id)
