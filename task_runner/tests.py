@@ -502,3 +502,138 @@ class TaskSchedulerTests(TransactionTestCase):
 
         finally:
             scheduler.shutdown()
+
+    def test_waiting_task_can_be_cancelled(self):
+        task = Task.objects.create(
+            name="Generate Report",
+            status=TaskStatus.WAITING,
+        )
+
+        scheduler = TaskScheduler(
+            max_workers=1,
+            poll_interval=0.001,
+        )
+
+        try:
+            scheduler.cancel_task(task.id)
+
+            task.refresh_from_db()
+
+            self.assertEqual(
+                task.status,
+                TaskStatus.CANCELLED,
+            )
+
+        finally:
+            scheduler.shutdown()
+
+    def test_running_task_cannot_be_cancelled(self):
+        task = Task.objects.create(
+            name="Generate Report",
+            status=TaskStatus.RUNNING,
+        )
+
+        scheduler = TaskScheduler(
+            max_workers=1,
+            poll_interval=0.001,
+        )
+
+        try:
+            with self.assertRaises(ValueError):
+                scheduler.cancel_task(task.id)
+
+        finally:
+            scheduler.shutdown()
+
+    def test_cancelled_dependency_blocks_dependent_task(self):
+        source = Task.objects.create(
+            name="Extract Text",
+            status=TaskStatus.WAITING,
+        )
+
+        dependent = Task.objects.create(
+            name="Analyze Document",
+            status=TaskStatus.WAITING,
+        )
+
+        dependent.dependencies.add(source)
+
+        scheduler = TaskScheduler(
+            max_workers=1,
+            poll_interval=0.001,
+        )
+
+        try:
+            scheduler.cancel_task(source.id)
+
+            scheduler._submit_ready_tasks()
+
+            source.refresh_from_db()
+            dependent.refresh_from_db()
+
+            self.assertEqual(
+                source.status,
+                TaskStatus.CANCELLED,
+            )
+
+            self.assertEqual(
+                dependent.status,
+                TaskStatus.BLOCKED,
+            )
+
+        finally:
+            scheduler.shutdown()
+
+    def test_ready_tasks_are_scheduled_in_fifo_order(self):
+        first_task = Task.objects.create(
+            name="First Task",
+            min_duration=0,
+            max_duration=0,
+            failure_probability=0,
+        )
+
+        second_task = Task.objects.create(
+            name="Second Task",
+            min_duration=0,
+            max_duration=0,
+            failure_probability=0,
+        )
+
+        third_task = Task.objects.create(
+            name="Third Task",
+            min_duration=0,
+            max_duration=0,
+            failure_probability=0,
+        )
+
+        scheduler = TaskScheduler(
+            max_workers=1,
+            poll_interval=0.001,
+        )
+
+        submitted_tasks = []
+
+        def fake_submit(task_function, task_id):
+            from concurrent.futures import Future
+
+            submitted_tasks.append(task_id)
+
+            future = Future()
+            scheduler.futures[future] = task_id
+
+            return future
+
+        scheduler.runner.executor.submit = fake_submit
+
+        try:
+            scheduler._submit_ready_tasks()
+
+            self.assertEqual(
+                submitted_tasks,
+                [first_task.id],
+            )
+
+        finally:
+            scheduler.futures.clear()
+            scheduler.shutdown()
+

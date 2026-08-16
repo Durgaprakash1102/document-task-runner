@@ -7,7 +7,7 @@ class TaskStatus(models.TextChoices):
     SUCCEEDED = "SUCCEEDED", "Succeeded"
     FAILED = "FAILED", "Failed"
     BLOCKED = "BLOCKED", "Blocked"
-
+    CANCELLED = "CANCELLED", "Cancelled"
 
 class Task(models.Model):
     name = models.CharField(max_length=255)

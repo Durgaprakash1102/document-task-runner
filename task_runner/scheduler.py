@@ -57,6 +57,7 @@ class TaskScheduler:
                 dependency.status in {
                     TaskStatus.FAILED,
                     TaskStatus.BLOCKED,
+                    TaskStatus.CANCELLED,
                 }
                 for dependency in dependencies
             ):
@@ -162,3 +163,25 @@ class TaskScheduler:
 
         finally:
             close_old_connections()
+            
+    def cancel_task(self, task_id):
+        with self.db_lock:
+            task = Task.objects.get(id=task_id)
+
+            if task.status != TaskStatus.WAITING:
+                raise ValueError(
+                    "Only WAITING tasks can be cancelled."
+                )
+
+            task.status = TaskStatus.CANCELLED
+            task.next_retry_at = None
+
+            task.save(
+                update_fields=[
+                    "status",
+                    "next_retry_at",
+                    "updated_at",
+                ]
+            )
+
+        return task
